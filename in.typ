@@ -20,4 +20,4 @@
   box(width: 50pt, height: 50pt, fill: green)
 )
 
-#if frame > 150 [#metadata("motyp_end")]
+#if frame <= 10000 [#metadata("motyp_continue")]
