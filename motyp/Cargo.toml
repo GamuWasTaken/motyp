@@ -11,4 +11,4 @@ typst = "0.15.1"
 typst-kit = { version = "0.15.1", features = ["datetime", "embedded-fonts", "scan-fonts", "system-downloader", "system-files", "vendor-openssl", "watcher"] }
 typst-layout = "0.15.1"
 typst-render = "0.15.1"
-yuv = "0.8.20"
+yuv = "0.8.21"

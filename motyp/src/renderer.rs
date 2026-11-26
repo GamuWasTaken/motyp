@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::error::Warning;
+
 use super::Error;
 
 use tiny_skia::Pixmap;
@@ -34,6 +36,7 @@ pub struct Config {
     pub input: PathBuf,
     pub width: u32,
 }
+
 impl From<&super::Config> for Config {
     fn from(value: &super::Config) -> Self {
         Self {
@@ -42,6 +45,14 @@ impl From<&super::Config> for Config {
             input: value.input.clone(),
             data: value.inputs.clone(),
         }
+    }
+}
+
+impl TryFrom<&super::Config> for Renderer {
+    type Error = Error;
+
+    fn try_from(value: &super::Config) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -69,14 +80,11 @@ impl Renderer {
             .input
             .file_name()
             .and_then(OsStr::to_str)
-            .ok_or(Error::Path(
-                "source path has no valid UTF-8 file name".into(),
-            ))?;
+            .ok_or(Error::bad_input_path(&config.input))?;
 
         let main = RootedPath::new(
             VirtualRoot::Project,
-            VirtualPath::new(file_name)
-                .map_err(|e| Error::Path(format!("invalid source path: {e}")))?,
+            VirtualPath::new(file_name).map_err(Error::input_not_found)?,
         )
         .intern();
 
@@ -84,9 +92,7 @@ impl Renderer {
             FsRoot::new(root),
             SystemPackages::new(SystemDownloader::new("motyp")),
         ));
-        files
-            .source(main)
-            .map_err(|e| Error::Path(format!("could not read {}: {e}", config.input.display())))?;
+        files.source(main).map_err(Error::input_not_readable)?;
 
         let library = LazyHash::new(
             Library::builder()
@@ -96,7 +102,7 @@ impl Renderer {
                 .build(),
         );
 
-        let time = Time::fixed_timestamp(0).map_err(|e| Error::Typst(e.to_string()))?;
+        let time = Time::system();
 
         let mut fonts = FontStore::new();
         fonts.extend(
@@ -120,23 +126,23 @@ impl Renderer {
         let warned = typst::compile::<PagedDocument>(self);
         let document = warned
             .output
-            .map_err(|e| Error::Typst(format_typst_errors(&e)))?; // MAYBE: we can return the typst diagnostic and handle it elsewhere
+            .map_err(|e| Error::Typst(format_typst_errors(&e)))?;
 
-        let warnings = warned
-            .warnings
-            .iter()
-            .map(|w| w.message.to_string())
-            .collect();
+        let mut warnings: Vec<_> = warned.warnings.into_iter().map(Warning::Typst).collect();
+
+        if document.pages().len() != 1 {
+            warnings.push(Warning::IgnoredPages(self.frame));
+        }
 
         Ok(CompiledFrame { document, warnings })
     }
 
-    pub fn render_frame(&self, compiled: CompiledFrame) -> Result<RenderedFrame, Error> {
+    pub fn render_frame(&self, compiled: PagedDocument) -> Result<RenderedFrame, Error> {
         let page = compiled
-            .document
             .pages()
             .first()
             .ok_or(Error::Typst("document has no pages".into()))?;
+
         let pixmap = typst_render::render(
             &page,
             &typst_render::RenderOptions {
@@ -147,16 +153,14 @@ impl Renderer {
             },
         );
 
-        self.validate_frame(&pixmap)?;
-
         Ok(RenderedFrame {
             id: self.frame,
-            data: pixmap.take(),
+            data: pixmap,
         })
     }
 
-    fn validate_frame(&self, data: &Pixmap) -> Result<(), Error> {
-        let (width, height) = (data.width(), data.height());
+    pub fn validate_render(&self, frame: &RenderedFrame) -> Result<(), Error> {
+        let (width, height) = (frame.data.width(), frame.data.height());
 
         if width != self.config.width || height != self.config.height {
             return Err(Error::Config(format!(
@@ -197,11 +201,11 @@ pub fn has_continue_marker(page: &PagedDocument) -> bool {
 
 pub struct CompiledFrame {
     pub document: PagedDocument,
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
 }
 
 pub struct RenderedFrame {
-    pub data: Vec<u8>,
+    pub data: Pixmap,
     pub id: u32,
 }
 

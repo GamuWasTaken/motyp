@@ -1,106 +1,49 @@
-use std::path::PathBuf;
-
-use clap::{ArgAction, Args, Parser, Subcommand};
+use clap::Parser;
 use motyp::Tool;
-#[derive(Parser)]
-#[command(version, about, color=clap::ColorChoice::Always)]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-impl TryFrom<Cli> for motyp::Config {
-    type Error = Result<Self, String>;
 
-    fn try_from(value: Cli) -> Result<Self, Self::Error> {
-        match value.command {
-            Commands::Compile(config) => Ok(Self {
-                width: config.width,
-                height: config.height,
-                fps: config.fps,
-                output: config.output,
-                input: config.input,
-                bitrate: config.bitrate,
-                profile: motyp::Profile::Dev,
-                inputs: config.inputs,
-            }),
-            _ => todo!(),
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum Commands {
-    #[command(about = "Compile a video from the given .typ file")]
-    Compile(Config),
-    #[command(about = "Watch the given .typ file and recompile on change")]
-    Watch(Config),
-    #[command(about = "Check the given .typ file is correct and print stats")]
-    Validate(Config),
-}
-
-#[derive(Args)]
-struct Config {
-    #[clap(short, long, default_value_t = 1920)]
-    width: u32,
-
-    #[clap(short, long, default_value_t = 1080)]
-    height: u32,
-
-    #[clap(long, default_value_t = 60.)]
-    fps: f32,
-
-    #[clap(short, long, default_value = "out.mp4")]
-    output: PathBuf,
-
-    input: PathBuf,
-
-    #[clap(long, default_value_t = 10_000_000)]
-    bitrate: u32,
-
-    #[clap(
-        long,
-        value_name = "key=value",
-        action = ArgAction::Append,
-        value_parser = parse_input_pair
-    )]
-    inputs: Vec<(String, String)>,
-}
+mod args;
+use crate::args::Cli;
 
 fn main() {
-    let config = Cli::parse().try_into().unwrap();
+    let args = Cli::parse();
 
-    let tool = match Tool::new(&config) {
-        Ok(tool) => tool,
-        Err(message) => {
-            println!("{message}");
-            return;
-        }
+    let config = args.config;
+    let action = match args.command {
+        args::Commands::Compile => Tool::generate_video,
+        args::Commands::Validate => Tool::validate_video,
     };
 
-    let res = tool.generate_video();
+    let res = action(&config);
 
-    let _ = dbg!(res, config);
+    // TODO improve warning and error reporting
+    match res {
+        Ok(stats) => {
+            println!(
+                "Done! Generated {} seconds",
+                stats.frames as f32 / config.fps as f32
+            );
+
+            if !stats.warnings.is_empty() {
+                println!("With the following warnings:");
+                for warning in &stats.warnings {
+                    println!("\t{warning}")
+                }
+            }
+        }
+        Err(error) => println!("Ups! {error}"),
+    }
 }
 
 /*
 
-motyp compile|watch|validate
+motyp compile|validate
 
 compile: generates a video from input
-watch: compile on input or dependencies change
 validate: check video will generate correctly and print stats (width, height, fps, frame ammount, video length)
 
 TODO make a progress bar (only when we know the frame amount/we can have it as an option, if asked, run the loop just compiling (validate), and then rendering with the progress bar)
+TODO: create temp then rename to avoid incomplete overwrites
+
+DISCUSSION: Do we really need watch? We dont really benefit much from having watch in the tool (can be done externally without loss of performance)
 
 */
-fn parse_input_pair(raw: &str) -> Result<(String, String), String> {
-    let (key, val) = raw
-        .split_once("=")
-        .ok_or("input must be a key and a value separated by an equal sign")?;
-    let key = key.trim().to_owned();
-    if key.is_empty() {
-        return Err("the key was missing or empty".into());
-    }
-    let val = val.trim().to_owned();
-    Ok((key, val))
-}

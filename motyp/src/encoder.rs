@@ -1,6 +1,6 @@
 use std::{fs::File, path::PathBuf};
 
-use muxide::api::{MuxerBuilder, VideoCodec};
+use muxide::api::{MuxerBuilder, MuxerStats, VideoCodec};
 use openh264::{
     OpenH264API,
     encoder::{BitRate, Complexity, EncoderConfig, FrameRate, FrameType, RateControlMode},
@@ -28,6 +28,13 @@ impl From<&super::Config> for Config {
             profile: value.profile,
             width: value.width,
         }
+    }
+}
+impl TryFrom<&super::Config> for Encoder {
+    type Error = Error;
+
+    fn try_from(value: &super::Config) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
 }
 
@@ -65,12 +72,11 @@ impl Encoder {
                 .scene_change_detect(true),
         };
 
-        let encoder = openh264::encoder::Encoder::with_api_config(
-            OpenH264API::from_source(),
-            encoder_config,
-        )?;
+        let encoder =
+            openh264::encoder::Encoder::with_api_config(OpenH264API::from_source(), encoder_config)
+                .map_err(Error::openh264_init)?;
 
-        let file = File::create(&config.output)?;
+        let file = File::create(&config.output).map_err(Error::output_not_creatable)?;
         let muxer = MuxerBuilder::new(file)
             .video(
                 VideoCodec::H264,
@@ -78,7 +84,8 @@ impl Encoder {
                 config.height,
                 config.fps as _,
             )
-            .build()?;
+            .build()
+            .map_err(Error::muxer_init)?;
         let yuv = yuv::YuvPlanarImageMut::alloc(
             config.width,
             config.height,
@@ -94,15 +101,16 @@ impl Encoder {
         })
     }
 
-    pub fn push_frame(&mut self, frame: &RenderedFrame) -> Result<(), Error> {
+    pub fn push_frame(&mut self, frame: RenderedFrame) -> Result<(), Error> {
         rgba_to_yuv420(
             &mut self.yuv,
-            &frame.data,
+            &frame.data.take(),
             self.config.width * 4,
             YuvRange::Limited,
             YuvStandardMatrix::Bt601,
             YuvConversionMode::Balanced,
-        )?;
+        )
+        .map_err(Error::yuv_failed)?;
 
         let source = YUVSlices::new(
             (
@@ -118,20 +126,27 @@ impl Encoder {
             ),
         );
 
-        let encoded_stream = self.encoder.encode(&source)?;
+        let encoded_stream = self
+            .encoder
+            .encode(&source)
+            .map_err(Error::openh264_failed)?;
         self.bitstream.clear();
         encoded_stream.write_vec(&mut self.bitstream);
 
-        self.muxer.write_video(
-            (frame.id as f32 / self.config.fps) as _,
-            &self.bitstream,
-            matches!(encoded_stream.frame_type(), FrameType::IDR | FrameType::I),
-        )?;
+        self.muxer
+            .write_video(
+                (frame.id as f32 / self.config.fps) as _,
+                &self.bitstream,
+                matches!(encoded_stream.frame_type(), FrameType::IDR | FrameType::I),
+            )
+            .map_err(Error::muxer_failed)?;
 
         Ok(())
     }
 
-    pub fn finish(self) -> Result<(), Error> {
-        self.muxer.finish().map_err(Into::into)
+    pub fn finish(self) -> Result<MuxerStats, Error> {
+        self.muxer
+            .finish_with_stats()
+            .map_err(Error::output_not_writeable)
     }
 }

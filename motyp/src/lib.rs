@@ -4,10 +4,10 @@ mod encoder;
 mod error;
 mod renderer;
 
+pub use crate::{encoder::Encoder, error::Error, renderer::Renderer};
 use crate::{
-    encoder::Encoder,
-    error::Error,
-    renderer::{Renderer, has_continue_marker},
+    error::Warning,
+    renderer::{CompiledFrame, has_continue_marker},
 };
 
 // TODO maybe do more than tune the encoder with this info (dev could be watch, and release standalone call, this makes it simpler to use (less options same functionality))
@@ -28,37 +28,59 @@ pub struct Config {
     pub inputs: Vec<(String, String)>,
 }
 
-pub struct Tool {
-    renderer: Renderer,
-    encoder: Encoder,
+pub struct Tool;
+
+pub struct Stats {
+    pub frames: u32,
+    pub warnings: Vec<Warning>,
 }
 
 impl Tool {
-    pub fn new(config: &Config) -> Result<Self, Error> {
-        Ok(Self {
-            renderer: Renderer::new(config)?,
-            encoder: Encoder::new(config)?,
-        })
-    }
-
-    // TODO return video stats
-    pub fn generate_video(mut self) -> Result<(), Error> {
+    pub fn generate_video(config: impl Into<Config>) -> Result<Stats, Error> {
+        let config = &config.into();
+        let mut renderer: Renderer = config.try_into()?;
+        let mut encoder: Encoder = config.try_into()?;
+        let mut warning_collector = Vec::new();
         loop {
-            let compiled = self.renderer.compile_frame()?;
-            if !has_continue_marker(&compiled.document) {
+            let CompiledFrame { document, warnings } = renderer.compile_frame()?;
+            if !has_continue_marker(&document) {
                 break;
             }
 
-            let rendered = self.renderer.render_frame(compiled)?;
+            warning_collector.extend(warnings);
 
-            self.encoder.push_frame(&rendered)?;
-            self.renderer.frame += 1;
+            let rendered = renderer.render_frame(document)?;
+
+            encoder.push_frame(rendered)?;
+            renderer.frame += 1;
         }
-        self.encoder.finish()?;
-        Ok(())
+        encoder.finish()?;
+        Ok(Stats {
+            frames: renderer.frame,
+            warnings: warning_collector,
+        })
     }
 
-    pub fn validate(&self) -> Result<(), Error> {
-        todo!()
+    pub fn validate_video(config: impl Into<Config>) -> Result<Stats, Error> {
+        let config = &config.into();
+        let mut renderer: Renderer = config.try_into()?;
+        let mut warning_collector = Vec::new();
+        loop {
+            let CompiledFrame { document, warnings } = renderer.compile_frame()?;
+            if !has_continue_marker(&document) {
+                break;
+            }
+
+            warning_collector.extend(warnings);
+
+            let rendered = renderer.render_frame(document)?;
+            renderer.validate_render(&rendered)?;
+            renderer.frame += 1;
+        }
+
+        Ok(Stats {
+            frames: renderer.frame,
+            warnings: warning_collector,
+        })
     }
 }

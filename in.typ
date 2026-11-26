@@ -11,6 +11,8 @@
   height: animation.height * 1pt
 )
 
+#set text(size: 5em)
+#datetime.today()
 #place(
   center + horizon,
 
@@ -20,4 +22,6 @@
   box(width: 50pt, height: 50pt, fill: green)
 )
 
-#if frame <= 10000 [#metadata("motyp_continue")]
+#if frame == 100 [#page[hola]]
+
+#if frame <= 150 [#metadata("motyp_continue")]
